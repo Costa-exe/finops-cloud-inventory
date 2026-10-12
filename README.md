@@ -1,4 +1,4 @@
-# AWS Cloud Inventory
+# finops-cloud-inventory
 
 A Python command-line tool for inspecting AWS resources, their relationships and monthly costs. It combines AWS SDK inventory, Cost Explorer billing and current Price List rates in one HTML report, with downloadable Excel workbooks per service.
 
