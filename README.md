@@ -17,7 +17,7 @@ Keep `costcsv.py`, `requirements.txt` and the complete `aws_inventory/` director
 
 ## Installation
 
-Run the following commands from the project directory.
+Run the following commands from the project directory. These examples use an optional virtual environment to keep dependencies separate; the script itself does not require a venv.
 
 ### Linux and macOS
 
@@ -57,6 +57,25 @@ After activation, use `python costcsv.py`. Leave the environment with `deactivat
 
 The virtual environment does not isolate AWS authentication: Python still inherits environment credentials and can read configured AWS profiles.
 
+### Running without a virtual environment
+
+You can run the script with any Python 3.11+ interpreter that has the dependencies from `requirements.txt` installed:
+
+```bash
+python costcsv.py --interactive
+```
+
+If dependencies are missing and your Python installation allows package installation, install them with the same interpreter:
+
+```bash
+python -m pip install -r requirements.txt
+python costcsv.py --interactive
+```
+
+Use `python3` instead of `python` where appropriate. If installation reports `externally-managed-environment`, use the virtual environment instructions above.
+
+Packages installed only inside `.venv` are not automatically available to system Python. In that case, either activate the venv or invoke its Python executable directly; activation is not required when using the executable path.
+
 ## AWS authentication
 
 Without `--profile`, the tool uses boto3's standard credential chain, including environment credentials, configured profiles and workload roles.
@@ -78,7 +97,7 @@ Each run uses the authenticated account. To inspect multiple accounts, run separ
 
 ## Usage
 
-The following examples use `python` from an activated environment. Alternatively, use the direct interpreter path shown in Installation.
+The following examples use `python` to mean the interpreter where you installed the dependencies, whether or not it belongs to a virtual environment. Alternatively, use the direct interpreter path shown in Installation.
 
 ### Guided configuration
 
