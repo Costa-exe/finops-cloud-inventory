@@ -1,0 +1,17 @@
+# Publish only the files needed to install and run the application.
+# Everything else at the project root stays local: reports, credentials,
+# virtual environments, tests, examples, PDFs, editor and agent settings.
+/*
+!/.gitignore
+!/README.md
+!/LICENSE
+!/LICENSE.*
+!/costcsv.py
+!/requirements.txt
+!/aws_inventory/
+
+# Include the complete runtime package, without caches or generated files.
+/aws_inventory/**
+!/aws_inventory/*.py
+!/aws_inventory/*.js
+!/aws_inventory/*.css
