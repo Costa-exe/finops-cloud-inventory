@@ -1,0 +1,25 @@
+# Exact runtime dependency closure for Python 3.11+.
+# Universal wheels verified against PyPI release metadata.
+# Install: python -m pip install --require-hashes --only-binary=:all: -r requirements.lock
+# Refresh hashes without upgrades: python scripts/update_lock.py
+
+boto3==1.43.111 \
+    --hash=sha256:c79994619c8d89e45f6fd0edc5c5b5a70c9358f00423f4c99cb64931f89ecf37
+botocore==1.43.111 \
+    --hash=sha256:f1f4c28cb2a096bf246d0bb24cbb1a01c5cb696ef499fa71b155adda7b94c90b
+et_xmlfile==2.0.0 \
+    --hash=sha256:7a91720bc756843502c3b7504c77b8fe44217c85c537d85037f0f536151b2caa
+jmespath==1.1.0 \
+    --hash=sha256:a5663118de4908c91729bea0acadca56526eb2698e83de10cd116ae0f4e97c64
+openpyxl==3.1.5 \
+    --hash=sha256:5282c12b107bffeef825f4617dc029afaf41d0ea60823bbb665ef3079dc79de2
+python-dateutil==2.9.0.post0 \
+    --hash=sha256:a8b2bc7bffae282281c8140a97d3aa9c14da0b136dfe83f850eea9a5f7470427
+s3transfer==0.19.2 \
+    --hash=sha256:d8168eccca828cbb2cd573675333f3bddd254313a9c42494b84c76b539e8ba25
+six==1.17.0 \
+    --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274
+tzdata==2026.5 \
+    --hash=sha256:b683bd1b6659ddcd810ff02ad09ba821d4bf1065072805063eb35c49617905ac
+urllib3==2.8.0 \
+    --hash=sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3

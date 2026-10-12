@@ -1,7 +1,8 @@
 """Read-only collectors for the additional service families.
 
-Only allowlisted metadata is exported. No secret values, workflow definitions,
-job arguments, model payloads, queue messages or object contents are requested.
+Only allowlisted metadata is exported. Configuration responses may include job
+arguments or other sensitive fields in memory; those fields are not exported.
+No APIs for secret values, model invocation, messages or object contents are used.
 """
 from .inventory_services import _emit
 

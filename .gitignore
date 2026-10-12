@@ -1,6 +1,6 @@
-# Publish only the files needed to install and run the application.
+# Publish the runtime, reproducible installation files and automated checks.
 # Everything else at the project root stays local: reports, credentials,
-# virtual environments, tests, examples, PDFs, editor and agent settings.
+# virtual environments, generated examples, PDFs, editor and agent settings.
 /*
 !/.gitignore
 !/README.md
@@ -8,10 +8,30 @@
 !/LICENSE.*
 !/costcsv.py
 !/requirements.txt
+!/requirements.lock
 !/aws_inventory/
+!/iam/
+!/scripts/
+!/tests/
+!/examples/
+!/.github/
 
 # Include the complete runtime package, without caches or generated files.
 /aws_inventory/**
 !/aws_inventory/*.py
 !/aws_inventory/*.js
 !/aws_inventory/*.css
+
+# Source-only verification fixtures; never publish generated report data.
+/iam/**
+!/iam/inventory-read-only.json
+/scripts/**
+!/scripts/update_lock.py
+/tests/**
+!/tests/*.py
+/examples/**
+!/examples/*.py
+/.github/**
+!/.github/workflows/
+/.github/workflows/**
+!/.github/workflows/checks.yml

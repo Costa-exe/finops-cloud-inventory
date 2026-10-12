@@ -7,13 +7,13 @@ The tool works with the AWS credentials available in your terminal or a selected
 ## Requirements
 
 - Python 3.11 or later on Windows, Linux or macOS.
-- Dependencies from `requirements.txt`.
+- Pinned dependencies from `requirements.lock`, installed through `requirements.txt` with SHA-256 verification.
 - AWS credentials with access to the selected resources, billing and pricing APIs.
 - Network access to AWS during collection; the HTML can then be opened offline.
 
 AWS CLI is not required to run the tool. It can be used separately to authenticate an existing SSO profile.
 
-Keep `costcsv.py`, `requirements.txt` and the complete `aws_inventory/` directory together. The package includes Python, JavaScript and CSS files required to build the report.
+Keep `costcsv.py`, `requirements.txt`, `requirements.lock` and the complete `aws_inventory/` directory together. The package includes Python, JavaScript and CSS files required to build the report.
 
 ## Installation
 
@@ -75,6 +75,19 @@ python costcsv.py --interactive
 Use `python3` instead of `python` where appropriate. If installation reports `externally-managed-environment`, use the virtual environment instructions above.
 
 Packages installed only inside `.venv` are not automatically available to system Python. In that case, either activate the venv or invoke its Python executable directly; activation is not required when using the executable path.
+
+## Reproducible dependencies
+
+`requirements.lock` pins the runtime dependencies, including transitive packages, to exact versions with SHA-256 hashes. `requirements.txt` delegates to that lockfile and enables hash checking and wheel-only installation. Both installation commands are supported:
+
+```bash
+python -m pip install -r requirements.txt
+python -m pip install --require-hashes --only-binary=:all: -r requirements.lock
+```
+
+Use a fresh virtual environment to avoid unrelated packages. A missing or mismatched artifact hash stops installation. The lock covers universal wheels for Python 3.11+ on Windows, Linux and macOS; it does not pin the Python interpreter or operating system.
+
+Dependency updates are deliberate: review compatible versions, update all affected exact pins, and run `python scripts/update_lock.py` to download the pinned artifacts and verify their hashes against public PyPI metadata. That command refreshes hashes without upgrading versions. Review the lockfile changes before committing. Hash verification provides reproducibility and artifact integrity, not a guarantee that a dependency is vulnerability-free.
 
 ## AWS authentication
 
@@ -314,7 +327,7 @@ Filters apply only to billing and combine with account, region and service filte
 | `sagemaker`, `bedrock` | SageMaker endpoints/production variants; Bedrock provisioned throughput and application inference profiles. |
 | `eventbridge`, `stepfunctions` | Event buses/rules/target ARNs; state machine metadata. |
 | `ecr` | Repositories and image metadata; image sizes are not summed as billed storage. |
-| `kms`, `secretsmanager` | Key and secret metadata; secret values and cryptographic material are never read. |
+| `kms`, `secretsmanager` | Key and secret metadata; no secret-value retrieval or cryptographic operations. |
 | `waf` | Regional/CloudFront Web ACLs; regional ALB associations. |
 
 Selecting EC2 includes EBS inventory. EKS, ECS and EMR also include EC2 and EBS as regional dependencies; this can collect instances outside the selected cluster. These dependencies do not change the service label in the HTML filename. Billing queries retain the requested service selection.
@@ -323,23 +336,57 @@ EC2 billing includes Compute and EC2 Other. EBS selects identifiable EBS usage w
 
 Native names are used when available, followed by the `Name` tag or resource ID as appropriate. An EC2 instance without a descriptive name cannot have one reconstructed. Relationships use IDs, ARNs and metadata returned by AWS.
 
-EBS capacity is provisioned capacity, not guest filesystem usage. The tool does not inspect VM files, S3 object contents, database records, queue messages, Lambda environment variables or secret values. Kubernetes workload internals and resource variants outside the implemented collectors are not included.
+EBS capacity is provisioned capacity, not guest filesystem usage. The tool does not call APIs to retrieve VM files, S3 object contents, database records, queue messages or Secrets Manager secret values. Configuration APIs can nevertheless return sensitive fields, such as Lambda environment variables or Glue job arguments, which may be received in process memory. Those fields are excluded from exported inventory and reports through explicit field selection. Kubernetes workload internals and resource variants outside the implemented collectors are not included.
 
 ## Required AWS access
 
-Permissions depend on the selected services and options:
+Use [the example IAM policy](iam/inventory-read-only.json) as an action-scoped baseline for all implemented collectors, billing and catalog queries. It enumerates the required operations rather than granting `ReadOnlyAccess`, `Describe*` or `Get*`. AWS API names and IAM actions are not always identical: the policy accounts for S3 permission names and API Gateway's `GET` action, limited to the inventory endpoint paths.
 
-| Purpose | Access |
+The example uses `Resource: "*"` for discovery and many metadata reads. It is **not a universal least-privilege policy for every environment**: restrict supported resource ARNs and regions, and remove service actions that your selected collectors do not use. Keep dependencies in mind: EC2 collection includes EBS; EKS, ECS and EMR also collect EC2 and EBS metadata.
+
+| Policy statement | Purpose / when to keep it |
 | --- | --- |
-| Account identity and region discovery | STS caller identity; `ec2:DescribeRegions` for region discovery. |
-| Service billing | `ce:GetCostAndUsage`; `ce:GetDimensionValues` when filter resolution requires it. |
-| Optional EC2 resource billing | `ce:GetCostAndUsageWithResources`. |
-| Current catalog prices | `pricing:GetProducts`; omitted with `--no-prices`. |
-| Resource inventory | Service-specific `Describe*`, `List*` and selected `Get*` operations used by the collectors. |
+| `InventoryMetadataRead` | Exact metadata operations for the implemented services; remove actions for unused collectors. |
+| `CallerIdentity` | STS caller identity. AWS does not require an explicit allow for `GetCallerIdentity`; it is listed for clarity. |
+| `BucketDiscovery`, `BucketConfiguration` | S3 bucket listing and selected configuration reads; no object-content access. |
+| `ApiGatewayInventory` | Read the REST/HTTP/WebSocket API collections, stages and integrations used by the collector. |
+| `ServiceBilling` | `ce:GetCostAndUsage` and `ce:GetDimensionValues`; omit in inventory-only mode. |
+| `OptionalEC2ResourceBilling` | `ce:GetCostAndUsageWithResources`; needed only with `--resource-costs`. |
+| `CurrentCatalogPrices` | `pricing:GetProducts`; omit when using `--no-prices` or billing-only mode. |
 
-Resource-read access alone does not guarantee billing access. Cost Explorer must be enabled and its data available. Cost Explorer API requests may incur charges. Selecting every service and region increases the number of requests.
+The policy targets the commercial AWS partition. Adapt ARN prefixes and verify billing/pricing endpoint availability before using another partition. Resource policies, permission boundaries, SCPs and billing access settings may further restrict access.
 
-The default billing and pricing endpoints target the commercial AWS partition. GovCloud and China deployments require compatible endpoint and pricing availability; cross-partition price equivalence is not assumed.
+An authenticated identity may already have broader permissions than the tool needs. **Adding this allow policy does not revoke permissions granted elsewhere.** Prefer a dedicated role with the required permissions; an administrator can apply a permission boundary where appropriate. The program neither changes IAM permissions nor assumes additional roles itself.
+
+The code enforces an explicit service/operation allowlist before dispatch and on SDK clients created by the inventory context. Unknown operations, writes and unneeded sensitive reads such as `GetSecretValue` are rejected. This is an application safeguard, not an IAM boundary or a sandbox for arbitrary Python code. The [operation registry](aws_inventory/read_operations.py) also defines the example policy so the two stay synchronized.
+
+Resource-read access alone does not grant billing access. Cost Explorer must be enabled and its data available.
+
+## AWS API charges
+
+Running the tool locally requires no payment to this project. **AWS API calls can incur charges even when they are read-only.**
+
+Cost Explorer charges **USD 0.01 per API request using the primary billing view**: 100 requests cost USD 1. With custom billing views, the charge is **USD 0.01 per source per request**; a view combining five sources costs USD 0.05 per request. See [AWS Cost Explorer pricing](https://aws.amazon.com/aws-cost-management/aws-cost-explorer/pricing/) for current terms and any additional feature charges.
+
+One script execution can make multiple API requests. Pagination, billing filters, additional breakdowns and resource-level queries can increase the request count; executions and requests are not interchangeable. `--mode inventory` avoids Cost Explorer queries, while `--no-prices` only disables Price List queries. Other AWS charges depend on the services and features used.
+
+## Sensitive data and report handling
+
+HTML and Excel reports contain confidential infrastructure and cost information, including resource names, account IDs, relationships, network addresses and spending. The HTML embeds the collected report data and the Excel workbooks; hiding a section or changing a filter does not remove the underlying data.
+
+Configuration responses can contain sensitive fields in memory even when those fields are not exported. Collectors explicitly select exportable metadata, and serialization redacts recognized sensitive keys. **Automatic redaction cannot reliably detect secrets placed in names, descriptions, tags with generic keys or arbitrary free-text fields.** Avoid storing credentials in resource metadata and review reports before sharing them.
+
+Keep reports in access-controlled storage, restrict who can read or download them, and use encrypted storage and secure sharing channels where required. Do not publish reports in a public repository or public web hosting. `output/` is excluded from Git, but `.gitignore` does not protect files already tracked or copies placed elsewhere. HTML files are created with owner-only permissions on POSIX; use appropriate filesystem ACLs on Windows. Downloaded Excel files use the browser and operating system's destination and permissions.
+
+## Automated checks
+
+The repository includes offline regression and security checks for sensitive-field exclusion, HTML escaping and CSP, literal Excel cells, dependency cost totals and blocked AWS operations. The fixtures use synthetic credentials and responses, with DNS, socket and SDK HTTP access blocked during AWS simulations; no real AWS account is needed.
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+[GitHub Actions](.github/workflows/checks.yml) runs the suite on pushes and pull requests with Python 3.11–3.14. The workflow uses read-only repository permissions, immutable action revisions and hash-verified dependency installation. It does not configure AWS credentials or publish report artifacts. `tests/` and the Python fixtures in `examples/` are for repository verification; they are not needed to run the installed application.
 
 ## Errors and troubleshooting
 
@@ -363,4 +410,4 @@ The report is marked partial when reads fail. If Cost Explorer is unavailable, H
 | `2` | Partial report published. |
 | `130` | Execution interrupted. |
 
-Reports contain infrastructure names, identifiers and relationships. Handle them as account information and keep them out of public repositories. Use a local filesystem supporting hard links for publication of a new HTML report.
+Use a local filesystem supporting hard links for publication of a new HTML report.

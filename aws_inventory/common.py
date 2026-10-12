@@ -6,12 +6,15 @@ import json
 import sys
 from datetime import date, datetime
 from decimal import Decimal
+from functools import partial
 from itertools import islice
 from threading import Lock
 from typing import Any, Iterable
 
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError, ClientError
+
+from .read_operations import OPERATIONS, require_read_operation
 
 
 AWS_ERRORS = (BotoCoreError, ClientError)
@@ -96,25 +99,32 @@ class InventoryContext:
         return child
 
     def client(self, service: str, region: str):
+        if service not in OPERATIONS:
+            raise ValueError(f"Unsupported inventory SDK service: {service}")
         key = (service, region)
         # Sessions are not thread-safe: serialize client creation, not API I/O.
         with self._client_lock:
             if key not in self.clients:
-                self.clients[key] = self.session.client(service, region_name=region,
-                                                        config=self.config)
+                client = self.session.client(service, region_name=region, config=self.config)
+                allowed = frozenset(client.meta.method_to_api_mapping[operation]
+                                    for operation in OPERATIONS[service])
+                client.meta.events.register_first(
+                    "before-parameter-build.*.*", partial(self._guard_api, allowed=allowed),
+                    unique_id="inventory-read-only")
+                self.clients[key] = client
             return self.clients[key]
 
     @staticmethod
-    def _check_read_operation(operation: str):
-        if not operation.startswith(("get_", "list_", "describe_")):
-            raise ValueError(f"Only read operations are supported: {operation}")
+    def _guard_api(model, *, allowed, **kwargs):
+        if model.name not in allowed:
+            raise ValueError(f"Operation is not in the inventory read allowlist: {model.name}")
 
     def call(self, service: str, operation: str, region: str, **kwargs) -> dict:
-        self._check_read_operation(operation)
+        require_read_operation(service, operation)
         return getattr(self.client(service, region), operation)(**kwargs)
 
     def pages(self, service: str, operation: str, region: str, result_key: str, **kwargs):
-        self._check_read_operation(operation)
+        require_read_operation(service, operation)
         client = self.client(service, region)
         if client.can_paginate(operation):
             responses = client.get_paginator(operation).paginate(**kwargs)
