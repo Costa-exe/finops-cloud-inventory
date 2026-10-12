@@ -135,7 +135,7 @@ function renderExports(service){
  const select=$('export-service');serviceKeys.forEach(key=>option(select,key,key.startsWith('billing:')?key.slice(8):key.toUpperCase()));
  if(data.workbooks[service])select.value=service;
  $('export-resources').disabled=!select.options.length;
- $('export-resources').addEventListener('click',()=>downloadWorkbook(select.value));
+ $('export-resources').addEventListener('click',()=>downloadWorkbook(select.value,$('export-style').value));
 }
 function render() {
     const month = $('month').value;

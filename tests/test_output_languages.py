@@ -69,7 +69,7 @@ class OutputLanguageTests(unittest.TestCase):
                 model = json.loads(re.search(r'<script id="report-data" type="application/json">(.*?)</script>', document, re.S)[1])
                 self.assertEqual(model['labels']['overview'], overview)
                 self.assertEqual(Decimal(model['summary']['2026-09']['USD']['total']), Decimal('297.92'))
-                workbook = load_workbook(BytesIO(base64.b64decode(model['workbooks']['ec2']['base64'])))
+                workbook = load_workbook(BytesIO(base64.b64decode(model['workbooks']['ec2']['readable']['base64'])))
                 self.assertIn(own_sheet, workbook.sheetnames)
                 self.assertIn(attached_sheet, workbook.sheetnames)
                 self.assertEqual(workbook[own_sheet]['A2'].value, f'{account} 123456789012')

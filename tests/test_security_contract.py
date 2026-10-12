@@ -39,7 +39,7 @@ class SecurityContractTests(unittest.TestCase):
         for marker in markers:
             self.assertNotIn(marker, serialized)
             self.assertNotIn(marker, document)
-        for export in payload['workbooks'].values():
+        for export in (item for variants in payload['workbooks'].values() for item in variants.values()):
             with ZipFile(BytesIO(base64.b64decode(export['base64']))) as archive:
                 for name in archive.namelist():
                     content = archive.read(name).decode('utf-8')

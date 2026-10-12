@@ -1,5 +1,6 @@
 """Monthly Excel downloads, shared costs and descriptive resource links."""
 from decimal import Decimal
+import base64
 from io import BytesIO
 import unittest
 
@@ -29,7 +30,19 @@ class ServiceExportTests(unittest.TestCase):
             self.assertIn('Totale periodo', headings)
             self.assertIsNone(ws.auto_filter.ref)
             self.assertEqual(len(ws.data_validations.dataValidation), 0)
-            self.assertTrue(ws.freeze_panes.endswith('4'))
+            self.assertEqual(ws.freeze_panes, 'A4')
+            self.assertIsNone(ws.sheet_view.pane.xSplit)
+            self.assertEqual(ws.sheet_view.pane.ySplit, 3)
+            self.assertEqual(ws.sheet_view.pane.topLeftCell, 'A4')
+            self.assertEqual(ws.sheet_view.view, 'normal')
+            self.assertTrue(ws.sheet_view.showGridLines)
+            self.assertEqual(ws['A3'].border.bottom.style, 'thin')
+            self.assertTrue(all(not dimension.hidden for dimension in ws.column_dimensions.values()))
+            for row in ws:
+                for cell in row:
+                    if cell.value is not None:
+                        self.assertEqual(cell.alignment.horizontal, 'center')
+                        self.assertEqual(cell.alignment.vertical, 'center')
             self.assertEqual(ws['A2'].value, 'Account 123456789012')
             self.assertEqual(ws.print_title_rows, '$1:$3')
         own, attached = workbook['Per risorsa'], workbook['Costi associati']
@@ -41,6 +54,38 @@ class ServiceExportTests(unittest.TestCase):
         self.assertIn('_unique', attached['E7'].value)
         self.assertIn('SUBTOTAL(103', workbook['_members']['B1'].value)
         self.assertIn('SUMIF', workbook['_unique']['B1'].value)
+
+    def test_both_download_styles_preserve_all_cell_values_types_and_formulas(self):
+        model = self.model()
+        exports = embedded_workbooks(model)
+        for service, variants in exports.items():
+            with self.subTest(service=service):
+                self.assertEqual(set(variants), {'basic', 'readable'})
+                books = {style: load_workbook(BytesIO(base64.b64decode(export['base64'])))
+                         for style, export in variants.items()}
+                self.assertNotEqual(variants['basic']['filename'], variants['readable']['filename'])
+                self.assertEqual(books['basic'].sheetnames, books['readable'].sheetnames)
+                for basic, readable in zip(books['basic'], books['readable']):
+                    values = lambda ws: {cell.coordinate: (cell.value, cell.data_type)
+                                         for row in ws for cell in row if cell.value is not None}
+                    self.assertEqual(values(basic), values(readable), basic.title)
+                    self.assertEqual(basic.sheet_state, readable.sheet_state)
+                    self.assertEqual((basic.max_row, basic.max_column), (readable.max_row, readable.max_column))
+                    self.assertEqual(len(basic.merged_cells.ranges), 0)
+                    self.assertIsNone(basic.freeze_panes)
+                    self.assertTrue(basic.sheet_view.showGridLines)
+                    self.assertTrue(all(not cell.has_style for row in basic for cell in row))
+                for book in books.values():
+                    book.close()
+
+    def test_basic_download_keeps_formula_like_names_as_text_and_unknown_costs_blank(self):
+        model = build([resource('fn', 'lambda', 'function', resource_name='=HYPERLINK("evil")',
+                                list_price_per_hour=None)], language='it')
+        book = load_workbook(BytesIO(build_service_workbook(model, 'lambda', style='basic')))
+        self.assertEqual(book['Per risorsa']['A4'].value, '=HYPERLINK("evil")')
+        self.assertEqual(book['Per risorsa']['A4'].data_type, 's')
+        self.assertIsNone(book['Per risorsa']['F4'].value)
+        self.assertEqual(book['Per risorsa']['G4'].data_type, 'f')
 
     def test_unknown_costs_are_blank_and_names_are_literal_text(self):
         model = build([resource('fn', 'lambda', 'function', resource_name='=HYPERLINK("evil")',

@@ -1,16 +1,18 @@
-"""Styled per-service workbooks embedded in the offline HTML report."""
+"""Per-service Excel data with readable and plain offline download variants."""
 from __future__ import annotations
 
 import base64
 from collections import defaultdict
 from decimal import Decimal
 from io import BytesIO
+from math import ceil
 import re
 
 from openpyxl import Workbook
-from openpyxl.styles import Alignment, Font, PatternFill
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter as letter
 from openpyxl.workbook.properties import CalcProperties
+from openpyxl.worksheet.views import Selection
 
 from .workbooks import _text
 from .localization import translate_message
@@ -41,7 +43,7 @@ def text_cell(cell, value):
     cell.data_type = 's'
 
 
-def build_service_workbook(model, service):
+def _service_book(model, service):
     """Every sheet has calendar-month columns, a region field and totals.
 
     Attached subtotals can overlap. Hidden membership/unique-cost sheets calculate
@@ -59,6 +61,15 @@ def build_service_workbook(model, service):
     book.calculation = CalcProperties(calcId=0, fullCalcOnLoad=True, forceFullCalc=True)
     book.properties.creator = 'AWS Inventory'
     book.properties.title = service.upper() + ' · USD'
+    center = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    body_font = Font(name='Calibri', size=11, color='344454')
+    heading_font = Font(name='Calibri', size=11, bold=True, color='344454')
+    title_font = Font(name='Calibri', size=18, bold=True, color='344454')
+    title_fill = PatternFill('solid', fgColor='E5EBF1')
+    header_fill = PatternFill('solid', fgColor='E4ECE9')
+    stripe_fills = (PatternFill('solid', fgColor='F5F7F9'), PatternFill('solid', fgColor='FFFFFF'))
+    edge = Side(style='thin', color='DFE5EB')
+    cell_border = Border(left=edge, right=edge, top=edge, bottom=edge)
 
     def sheet(title, columns, rows):
         ws = book.create_sheet(title)
@@ -66,25 +77,33 @@ def build_service_workbook(model, service):
         end_col = money_start + len(months)
         if len(rows) > 1_048_576 - HEADER - 2 or end_col > 16384:
             raise ValueError('Service export exceeds Excel worksheet limits.')
-        ws.sheet_view.showGridLines = False
-        ws.freeze_panes = f'{letter(money_start)}{HEADER + 1}'
+        ws.sheet_view.showGridLines = True
+        ws.sheet_view.view = 'normal'
+        ws.sheet_view.zoomScale = 90
+        # Freeze headers only: wide frozen metadata columns can hide the scrollable area.
+        ws.freeze_panes = f'A{HEADER + 1}'
+        ws.sheet_view.selection = [Selection(pane='bottomLeft', activeCell='A4', sqref='A4')]
         for row, value in [(1, service.upper() + ' · ' + title), (2, f"{tr('Account', 'Account')} {model['account']}")]:
             ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=end_col)
             cell = ws.cell(row, 1)
             text_cell(cell, value)
-            cell.font = Font(name='Calibri', size=20 if row == 1 else 11, bold=row == 1,
-                             color='FFFFFF' if row == 1 else '53697B')
-            cell.fill = PatternFill('solid', fgColor='17324D' if row == 1 else 'F2F6FA')
-            cell.alignment = Alignment(vertical='center', wrap_text=True)
+            cell.font = title_font if row == 1 else body_font
+            cell.fill = title_fill if row == 1 else stripe_fills[0]
+            cell.alignment = center
             ws.row_dimensions[row].height = 36 if row == 1 else 30
         headers = columns + months + [tr('Period total', 'Totale periodo')]
         for col, value in enumerate(headers, 1):
             cell = ws.cell(HEADER, col)
             text_cell(cell, value)
-            cell.fill = PatternFill('solid', fgColor='087F8C')
-            cell.font = Font(name='Calibri', bold=True, color='FFFFFF')
-            cell.alignment = Alignment(wrap_text=True, vertical='center')
-            ws.column_dimensions[letter(col)].width = 21 if col >= money_start else (30 if col == 1 else 25)
+            cell.fill = header_fill
+            cell.border = cell_border
+            cell.font = heading_font
+            cell.alignment = center
+            width = 21 if col >= money_start else (32 if col == 1 else 26)
+            if col < money_start:
+                longest = max((len(str(identity[col - 1])) for identity, _ in rows), default=0)
+                width = min(48, max(width, longest + 2))
+            ws.column_dimensions[letter(col)].width = width
         ws.row_dimensions[HEADER].height = 32
         for rownum, (identity, amounts) in enumerate(rows, HEADER + 1):
             for col, value in enumerate(identity, 1):
@@ -96,12 +115,16 @@ def build_service_workbook(model, service):
             ws.cell(rownum, end_col, f'=IF(COUNT({start}{rownum}:{end}{rownum})=0,"",SUM({start}{rownum}:{end}{rownum}))')
             for col in range(1, end_col + 1):
                 cell = ws.cell(rownum, col)
-                cell.font = Font(name='Calibri', size=11, color='243746')
-                cell.fill = PatternFill('solid', fgColor='F0F5FA' if rownum % 2 else 'FFFFFF')
-                cell.alignment = Alignment(vertical='center', wrap_text=col < money_start)
+                cell.font = body_font
+                cell.border = cell_border
+                cell.fill = stripe_fills[rownum % 2]
+                cell.alignment = center
                 if col >= money_start:
                     cell.number_format = MONEY
-            ws.row_dimensions[rownum].height = 42
+            lines = max((sum(max(1, ceil(len(line) / max(1, ws.column_dimensions[letter(col)].width - 3)))
+                             for line in str(value).split('\n'))
+                         for col, value in enumerate(identity, 1)), default=1)
+            ws.row_dimensions[rownum].height = min(409, max(36, lines * 16 + 12))
         last = HEADER + len(rows)
         footer = max(HEADER + 2, last + 2)
         text_cell(ws.cell(footer, 1), tr('Total', 'Totale'))
@@ -111,9 +134,10 @@ def build_service_workbook(model, service):
             cell = ws.cell(footer, col, formula)
             cell.number_format = MONEY
         for cell in ws[footer][:end_col]:
-            cell.fill = PatternFill('solid', fgColor='17324D')
-            cell.font = Font(name='Calibri', color='FFFFFF', bold=True)
-            cell.alignment = Alignment(wrap_text=True, vertical='center')
+            cell.fill = title_fill
+            cell.border = cell_border
+            cell.font = heading_font
+            cell.alignment = center
         ws.row_dimensions[footer].height = 36
         ws.print_title_rows = f'1:{HEADER}'
         ws.sheet_properties.pageSetUpPr.fitToPage = True
@@ -149,7 +173,6 @@ def build_service_workbook(model, service):
         attached_rows.append(([r['name'] or r['id'], r['region'], r['instance_type'] or r['type'], included],
                               [r['totals'][m]['amounts'].get('USD') for m in months]))
     attached, start, footer = sheet(tr('Attached costs', 'Costi associati'), [tr('Name', 'Nome'), tr('Region', 'Regione'), tr('Type', 'Tipo'), tr('Included services', 'Servizi inclusi')], attached_rows)
-    attached.column_dimensions['D'].width = 55
     text_cell(attached.cell(footer, 1), tr('Unique total', 'Totale univoco'))
     # Membership rows refer to visible parent cells; unique component rows only
     # contribute if at least one visible parent includes that component.
@@ -176,15 +199,58 @@ def build_service_workbook(model, service):
         attached.cell(footer, start + offset, f'=IF(COUNT({rng})=0,"",SUM({rng}))')
     rng = f'{letter(start)}{footer}:{letter(start + len(months) - 1)}{footer}'
     attached.cell(footer, start + len(months), f'=IF(COUNT({rng})=0,"",SUM({rng}))')
-    output = BytesIO()
-    book.save(output)
-    return output.getvalue()
+    return book
+
+
+def _plain(book):
+    """Remove presentation only; keep coordinates, values, types and formulas."""
+    for sheet in book:
+        for merged in list(sheet.merged_cells.ranges):
+            sheet.unmerge_cells(str(merged))
+        for row in sheet:
+            for cell in row:
+                cell.style = 'Normal'
+        for row in sheet.row_dimensions.values():
+            row.height = None
+        sheet.freeze_panes = None
+        sheet.sheet_view.selection = [Selection(activeCell='A1', sqref='A1')]
+        sheet.sheet_view.showGridLines = True
+        sheet.sheet_view.zoomScale = 100
+
+
+def _serialize(book):
+    with BytesIO() as output:
+        book.save(output)
+        return output.getvalue()
+
+
+def build_service_workbook(model, service, *, style='readable'):
+    if style not in {'readable', 'basic'}:
+        raise ValueError('Excel style must be readable or basic.')
+    book = _service_book(model, service)
+    try:
+        if style == 'basic':
+            _plain(book)
+        return _serialize(book)
+    finally:
+        book.close()
 
 
 def embedded_workbooks(model):
     result = {}
     for service in service_keys(model):
         slug = re.sub(r'[^a-zA-Z0-9_-]', '_', service)[:100]
-        result[service] = {'filename': f'aws-{ "simulation-" if model["simulation_only"] else ""}{slug}.xlsx',
-                           'base64': base64.b64encode(build_service_workbook(model, service)).decode('ascii')}
+        prefix = f'aws-{"simulation-" if model["simulation_only"] else ""}{slug}'
+        book = _service_book(model, service)
+        try:
+            variants = {}
+            # Calculate cells and formulas once, then serialize the same data twice.
+            for style in ('readable', 'basic'):
+                if style == 'basic':
+                    _plain(book)
+                variants[style] = {'filename': f'{prefix}-{style}.xlsx',
+                                   'base64': base64.b64encode(_serialize(book)).decode('ascii')}
+            result[service] = variants
+        finally:
+            book.close()
     return result

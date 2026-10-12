@@ -206,7 +206,12 @@ Each service workbook contains four sheets:
 | By resource | Names, regions, catalog rates and own monthly costs. |
 | Associated costs | Resource-plus-dependency subtotals and a short note identifying included services. |
 
-Sheets have monthly columns, a period total, a region field, frozen headings and no dropdown filters. Below the title, only the account ID is shown. Workbooks contain all collected months and regions, independently of the current HTML filters.
+In Downloads, select a service and an Excel format:
+
+- **Easy reading:** muted colors, centered text and amounts, wrapped descriptions, visible cell gridlines and frozen header rows. No columns are frozen, so wide sheets remain scrollable horizontally.
+- **Basic:** standard cells without decorative formatting, merged titles or frozen panes. Headers, values, numeric types and total formulas are preserved; amounts are in USD as indicated in the workbook title.
+
+Both versions contain the same data, monthly columns, period totals and region fields, with no dropdown filters. Below the title, only the account ID is shown. Workbooks contain all collected months and regions, independently of the current HTML filters. Technical helper sheets remain hidden in both versions to calculate shared-resource totals without double counting.
 
 Blank costs mean unavailable, not zero. The associated-cost total counts shared components once. The sheets represent different views of costs and must not be added together.
 
