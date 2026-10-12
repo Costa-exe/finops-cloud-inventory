@@ -364,6 +364,8 @@ Resource-read access alone does not grant billing access. Cost Explorer must be 
 
 ## AWS API charges
 
+See [Execution costs](EXECUTION_COSTS.md) for worked examples, request-count assumptions and the difference between running with and without `--resource-costs`.
+
 Running the tool locally requires no payment to this project. **AWS API calls can incur charges even when they are read-only.**
 
 Cost Explorer charges **USD 0.01 per API request using the primary billing view**: 100 requests cost USD 1. With custom billing views, the charge is **USD 0.01 per source per request**; a view combining five sources costs USD 0.05 per request. See [AWS Cost Explorer pricing](https://aws.amazon.com/aws-cost-management/aws-cost-explorer/pricing/) for current terms and any additional feature charges.
