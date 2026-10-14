@@ -68,7 +68,8 @@ class AllServicesSimulationTests(unittest.TestCase):
         self.assertEqual(Decimal(ecs["totals"]["2026-09"]["amounts"]["USD"]), Decimal("54.16"))
         self.assertEqual(Decimal(entries[CLUSTER]["totals"]["2026-09"]["amounts"]["USD"]), Decimal("257.92"))
         self.assertEqual(Decimal(self.model["summary"]["2026-09"]["USD"]["total"]), Decimal("3047.04"))
-        self.assertEqual(Decimal(self.model["summary"]["2026-07"]["USD"]["total"]), Decimal("3145.536"))
+        # EKS/EBS did not yet exist; EC2 only exposes an August launch in this fixture.
+        self.assertEqual(Decimal(self.model["summary"]["2026-07"]["USD"]["total"]), Decimal("2238.696"))
 
     def test_rds_compute_is_partial_and_unsupported_prices_are_not_fabricated(self):
         db = next(r for r in self.model["resources"] if r["service"] == "rds")

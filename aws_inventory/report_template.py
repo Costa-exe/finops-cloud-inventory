@@ -9,6 +9,9 @@ from .service_exports import embedded_workbooks
 
 
 NOTE_TRANSLATIONS = {
+    "Deleted NAT gateway without a usable deletion date; runtime estimate unavailable.": "NAT Gateway eliminato senza una data di eliminazione valida: stima della durata non disponibile.",
+    "Redshift deployment is unknown or transitioning; total node quantity cannot be established.": "La configurazione Redshift è sconosciuta o in transizione: non è possibile determinare il numero totale di nodi.",
+    "Redshift Multi-AZ: node count per AZ multiplied by two Availability Zones.": "Redshift Multi-AZ: numero di nodi per zona moltiplicato per due zone di disponibilità.",
     "Instance runtime": "Utilizzo delle istanze", "Provisioned storage": "Storage allocato",
     "Additional IOPS": "IOPS aggiuntive", "Additional throughput": "Throughput aggiuntivo",
     "Base provisioned hours": "Ore di disponibilità della risorsa",

@@ -16,11 +16,20 @@ function renderCalculation(resource,month,currency){
  const fact=(label,text)=>facts.append(append(el('div'),el('dt',label),el('dd',text)));
  fact(tr('Selected interval (exclusive end)', 'Intervallo selezionato (fine esclusa)'),`${date(window.start)} → ${date(window.end)} · ${displayZone}`);
  fact(tr('Calendar hours / full month', 'Ore di calendario / mese intero'),`${number(window.hours)} / ${number(window.month_hours)}`);
+ const lifetime=resource.lifetime;
+ if(lifetime?.start)fact(t(lifetime.creation_known?'creation_date':'last_launch'),date(lifetime.start));
+ if(lifetime?.end)fact(t('deletion_date'),date(lifetime.end));
+ fact(t('excluded_hours'),number(value.excluded_hours??0));
  fact(tr('Hours covered by resource billing', 'Ore coperte da fatturazione della risorsa'),number(value.covered_hours));
  fact(tr('Uncovered calendar hours', 'Ore di calendario non coperte'),number(value.modeled_hours));
  fact(tr('Own billed amount', 'Quota propria fatturata'),usd?money(value.billed,currency):t('unavailable'));
  fact(tr('Own estimated amount', 'Quota propria stimata'),usd?money(value.estimated,currency):t('unavailable'));
+ if(plan.runtime_hours_per_day!==undefined)fact(t('effective_runtime'),number(plan.runtime_hours_per_day));
  box.append(facts);
+ box.append(el('p',t(lifetime?.creation_known?'lifetime_known':lifetime?.start?'lifetime_launch':'lifetime_unknown')));
+ if(lifetime?.end)box.append(el('p',t('deletion_note')));
+ if(data.context.mode!=='inventory')box.append(el('p',t('historical_state')));
+ box.append(el('p',t('attachment_window')));
  if(value.aws_provisional)box.append(el('p',tr('AWS marks the returned billed amount as provisional.', 'AWS indica come provvisorio l’importo fatturato restituito.')));
  box.append(el('p',tr('Own cost = returned resource billing + supported estimates for uncovered intervals. Billing and estimates are never added for the same hours.', 'Costo proprio = fatturazione della risorsa restituita da AWS + stime supportate per gli intervalli scoperti. Fatturazione e stima non vengono sommate per le stesse ore.'),'calculation-formula'));
  if(plan.currency===currency&&plan.components.length){
@@ -36,7 +45,7 @@ function renderCalculation(resource,month,currency){
   box.append(el('p',tr('Hourly components: unit rate × quantity/runtime factor × uncovered hours. Monthly components: unit rate × quantity × uncovered hours ÷ calendar hours in the full month. Component results are displayed rounded; the stored own cost is authoritative.', 'Componenti orarie: tariffa × quantità/fattore di utilizzo × ore scoperte. Componenti mensili: tariffa × quantità × ore scoperte ÷ ore di calendario del mese intero. Le componenti sono mostrate arrotondate; il costo proprio usa gli importi calcolati dal modello.')));
  }
  box.append(el('p',tf('runtime_note',{hours:data.assumptions.hours_per_day})));
- const included=resource.included_keys.filter(k=>k!==resource.key).length;
+ const included=(resource.totals[month].included_keys??resource.included_keys).filter(k=>k!==resource.key).length;
  box.append(el('p',tf('subtotal_note',{count:included})));
  box.append(el('p',tr('Sources: AWS Cost Explorer for returned resource costs; AWS Price List for catalog estimates. Applying current inventory/prices to past months does not reconstruct historical runtime, scaling, Spot prices or discounts. Usage charges without measured consumption remain excluded.', 'Fonti: AWS Cost Explorer per i costi della risorsa restituiti; AWS Price List per le stime di catalogo. Applicare inventario e prezzi attuali a mesi passati non ricostruisce accensioni, scalabilità, prezzi Spot o sconti storici. I costi a consumo senza misurazioni restano esclusi.')));
  const notes=el('ul');[...plan.notes,...resource.notes].forEach(note=>notes.append(el('li',translateNote(note))));box.append(notes);

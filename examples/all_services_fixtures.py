@@ -171,7 +171,7 @@ class AllServicesAWS(SimulatedAWS):
                 "EncryptionAtRestOptions": {"Enabled": True}}]}, {"DomainNames": ["search-catalog"]})
             self.add("opensearch", region, "list_tags", {"TagList": []}, {"ARN": arn("es", "domain/search-catalog")})
         self.add("redshift", region, "describe_clusters", {"Clusters": [{"ClusterIdentifier": "analytics-warehouse", "NodeType": "ra3.large",
-            "ClusterStatus": "available", "NumberOfNodes": 2, "ClusterVersion": "1.0", "VpcId": VPC,
+            "ClusterStatus": "available", "NumberOfNodes": 2, "MultiAZ": "Disabled", "ClusterVersion": "1.0", "VpcId": VPC,
             "Encrypted": True, "ClusterCreateTime": CREATED, "Tags": []}] if active else []}, {})
         queue = f"https://sqs.{WEST}.amazonaws.com/{ACCOUNT}/order-jobs"
         self.add("sqs", region, "list_queues", {"QueueUrls": [queue] if active else []}, {"MaxResults": 1000})

@@ -110,9 +110,13 @@ def catalog_query(row: dict):
         if engine not in ENGINE_NAMES:
             row["price_status"] = "unsupported_database_engine"
             return None
+        aurora = engine in {'aurora', 'aurora-mysql', 'aurora-postgresql'}
+        if not aurora and not isinstance(row.get('multi_az'), bool):
+            row['price_status'] = 'missing_database_deployment'
+            return None
         attributes = {"regionCode": region, "productFamily": "Database Instance",
                       "instanceType": row["instance_type"], "databaseEngine": ENGINE_NAMES[engine],
-                      "deploymentOption": "Multi-AZ" if row.get("multi_az") is True else "Single-AZ"}
+                      "deploymentOption": "Multi-AZ" if not aurora and row.get("multi_az") is True else "Single-AZ"}
         license_model = details.get("license_model")
         if license_model == "license-included":
             attributes["licenseModel"] = "License included"

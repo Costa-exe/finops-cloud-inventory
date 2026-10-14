@@ -23,9 +23,11 @@ Both modes produce one HTML report, with inventory, relationships, monthly figur
 
 The program retrieves service/region totals with `GetCostAndUsage`. It inventories resources through SDK metadata APIs, queries current catalog rates for supported configurations and calculates estimates locally. It does not divide the billed service total among instances to force the numbers to match.
 
-In particular, the estimate describes current capacity modeled over the selected period. It cannot reconstruct every past resize, deletion, runtime hour or usage-based charge. Discounts and commitment allocation can also make billing differ from list-price estimates. Unsupported or missing prices remain unavailable rather than becoming a zero charge.
+In particular, the estimate describes current capacity modeled over the selected period, bounded by available creation dates. It does not estimate costs before known creation; creation partway through a month prorates the estimate. EC2 uses the primary network interface attachment for initial launch, with the last launch as a conservative fallback when creation is unknown. Missing dates are explicitly identified as an unverified historical scenario. It cannot reconstruct every past resize, deletion, attachment, runtime hour or usage-based charge. Discounts and commitment allocation can also make billing differ from list-price estimates. Unsupported or missing prices remain unavailable rather than becoming a zero charge; a resource known not to exist yet can have a genuine zero for that interval.
 
 For a historical monthly report with resource detail estimated from current inventory, this is the intended mode. `--resource-costs` is off unless explicitly supplied.
+
+Historical estimates use the configured runtime assumption even if an instance is stopped today. Associated costs are bounded by parent creation and known current disk attachment dates; they are not automatically copied as a full-month charge. If a returned resource billing interval crosses such a boundary, the tool keeps that billing on the resource but does not invent an allocation to the parent. These calculations use already collected metadata and do not add AWS API calls.
 
 Example command, using a completed month of your choice:
 

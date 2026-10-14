@@ -219,7 +219,15 @@ Blank costs mean unavailable, not zero. The associated-cost total counts shared 
 
 **AWS Cost Explorer** supplies billed amounts for the selected interval. **AWS Price List Query API** supplies current public On-Demand catalog rates for supported configurations. Rates are queried from AWS, not hard-coded.
 
-The inventory is a snapshot of resources present when the command runs. Estimates apply that configuration and current catalog prices to the selected period. They do not reconstruct historical resource lifetimes, scaling or actual runtime.
+The inventory is a snapshot of resources present when the command runs. Estimates apply current configuration and catalog prices only from the available creation date onward: resources created after a month have zero estimated own cost for that month, and creation partway through a month prorates estimated hours. Associated costs are limited to each parent's possible lifetime and, for EC2/EBS, the current attachment date when available. These limits also apply through cluster → worker → disk relationships. Resource billing returned by AWS is preserved even when it conflicts with inventory dates.
+
+For example, a disk with an estimated September cost of USD 8 contributes USD 4 to a machine created or attached to it on September 16. The disk's own cost stays USD 8. Shared dependencies are counted once in the overall total. If a returned billing interval crosses an attribution boundary, its cost remains available on the resource itself but unavailable in that parent's subtotal: the tool cannot know how much was consumed on either side of the boundary.
+
+For EC2, initial launch is taken from the primary network interface attachment (device index 0), not `LaunchTime`, which can change after stop/start. If only the last launch is available, estimates begin there and earlier periods remain unavailable without resource billing. See [AWS launch-time documentation](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/Stop_Start.html). If no usable date is available, the calculation panel explicitly identifies the result as a current-capacity scenario with unknown historical existence. Current relationships, resizing, deleted resources and actual runtime are not reconstructed; estimates can still differ from historical billing.
+
+EMR cluster subtotals use `Status.Timeline.CreationDateTime` from the existing description or listing response. The [cluster creation timestamp](https://docs.aws.amazon.com/emr/latest/APIReference/API_ClusterTimeline.html) is distinct from the time it became ready. If neither response supplies it, historical existence remains unknown.
+
+A deleted NAT gateway can still appear briefly in the inventory. Its estimate stops at the `DeleteTime` returned by AWS, with zero estimated cost in later intervals. A deleted gateway without a usable deletion date has an unavailable estimate. This uses existing SDK metadata and does not reconstruct older gateways no longer returned by AWS; service-specific billing rounding remains excluded. See [NAT gateway lifecycle](https://docs.aws.amazon.com/vpc/latest/userguide/nat-gateway-working-with.html).
 
 | Component | Calculation |
 | --- | --- |
@@ -229,11 +237,19 @@ The inventory is a snapshot of resources present when the command runs. Estimate
 | Associated resources | Own cost plus known costs of explicitly included dependencies. |
 | Resource-level EC2 billing | Available resource billing replaces estimates for the same intervals; estimates cover only uncovered hours. |
 
-`--estimate-hours-per-day` defaults to 24. Reducing instance runtime does not reduce continuously provisioned storage or every service's hourly charges. A resource currently stopped is assumed stopped throughout the scenario; attached storage remains chargeable.
+When EKS Auto Mode compute is enabled, the resource subtotal is explicitly partial: the tool excludes the [additional Auto Mode management charges](https://docs.aws.amazon.com/eks/latest/userguide/eks-compute.html). The control-plane estimate remains available.
+
+`--estimate-hours-per-day` defaults to 24. It applies to supported EC2/RDS/Redshift compute and Fargate runtime estimates. It does not reduce continuously provisioned storage, EKS control planes, network base charges, or allocated ElastiCache/OpenSearch nodes. See [ElastiCache pricing](https://aws.amazon.com/elasticache/pricing/) and [OpenSearch pricing](https://aws.amazon.com/opensearch-service/pricing/). Estimates prorate calendar time; service-specific minimum charges and billing rounding are not reconstructed.
+
+For dated reports, today's stopped/running state is not applied to the past: the configured runtime assumption is used for uncovered intervals. Only `--mode inventory`, the current-month capacity scenario, treats currently stopped/terminated compute as zero. Attached storage remains chargeable. Neither mode infers past stop/start schedules from a current status.
 
 Use `--resource-costs` to request EC2 billing attributed to resource IDs. The script requires a period within the last 14 days and a selection containing `ec2`, `eks`, `ecs` or `all`; resource-level data must be available in Cost Explorer. Historical service totals are never arbitrarily divided among instances.
 
 Missing rates, ambiguous configurations and unsupported usage quantities remain unavailable. Some services have inventory and service-level billing without a resource-level estimate. RDS estimates cover compute only; storage, backups and I/O are excluded. Spot instances may have an On-Demand comparison, not a Spot price. Discounts, Savings Plans and Reserved Instances are not inferred from catalog prices.
+
+For RDS engines other than Aurora, the Single-AZ/Multi-AZ flag must be known before selecting an instance rate. Aurora instances are priced individually; cluster replication does not turn each instance into an RDS Multi-AZ instance. For Redshift Multi-AZ, the configured node count per AZ is multiplied by two; unknown or transitioning deployment metadata leaves the compute estimate unavailable. This follows the [Redshift deployment model](https://docs.aws.amazon.com/redshift/latest/mgmt/create-cluster-multi-az.html) and [pricing](https://aws.amazon.com/redshift/pricing/).
+
+Distinct catalog dimensions remain alternatives even when their numeric rates match. An ambiguous or tiered quote cannot be replaced by a cached scalar hourly price. Fargate Spot tasks, like Spot EC2 instances, are explicitly marked as On-Demand comparisons; the tool does not retrieve Spot prices.
 
 Resource subtotals may overlap: an EKS cluster can include EC2 workers and their disks. Overview resource totals count each own cost once. **Do not add Cost Explorer service totals to the resource estimates**, or sum overlapping dependency subtotals.
 

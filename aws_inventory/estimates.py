@@ -7,12 +7,14 @@ from __future__ import annotations
 
 import calendar
 import hashlib
+import heapq
 import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, localcontext
 
 from .costs import _period_hours
+from .common import compact_json
 from .report import redact_sensitive
 
 
@@ -42,7 +44,7 @@ def instant(value):
 
 def month_windows(context, generated_at):
     now = instant(generated_at)
-    start = instant(context.get("period_start") or now.replace(day=1, hour=0, minute=0, second=0).isoformat())
+    start = instant(context.get("period_start") or now.replace(day=1, hour=0, minute=0, second=0, microsecond=0).isoformat())
     next_month = datetime(now.year + now.month // 12, now.month % 12 + 1, 1, tzinfo=timezone.utc)
     end = instant(context.get("period_end") or next_month.isoformat())
     if start >= end:
@@ -87,24 +89,26 @@ def configuration(row):
 
 def full_rate(quotes):
     """Only one unqualified rate; alternative SKUs/tiers are never guessed."""
-    candidates = []
+    candidates = {}
     for quote in quotes:
         if (str(quote.get("price_begin_range", "0")) not in {"0", "0.0"}
                 or str(quote.get("price_end_range", "Inf")).lower() not in {"inf", "infinity"}
                 or details(quote).get("applies_to")):
             return None
-        signature = (quote.get("price_sku"), str(quote.get("price_per_unit")), quote.get("price_currency"))
-        if not any(existing[0] == signature for existing in candidates):
-            candidates.append((signature, quote))
+        # Equal amounts do not make distinct price dimensions interchangeable.
+        signature = compact_json({key: quote.get(key) for key in (
+            'price_sku', 'price_per_unit', 'price_currency', 'price_unit',
+            'price_component', 'price_description', 'price_effective_date', 'details')})
+        candidates.setdefault(signature, quote)
     if len(candidates) != 1:
         return None
-    result = candidates[0][1]
+    result = next(iter(candidates.values()))
     if number(result["price_per_unit"]) < 0:
         raise ValueError("Public catalog rates cannot be negative.")
     return result
 
 
-def resource_plan(row, quotes, regional_quotes, *, hours_per_day, eks_support):
+def resource_plan(row, quotes, regional_quotes, *, hours_per_day, eks_support, current_scenario=False):
     plan = {"currency": "", "hourly": ZERO, "monthly": ZERO, "known": False,
             "complete": True, "components": [], "notes": [], "rate_label": "Rate unavailable"}
 
@@ -183,6 +187,10 @@ def resource_plan(row, quotes, regional_quotes, *, hours_per_day, eks_support):
             plan["complete"] = False
             plan["notes"].append(f"No unique catalog rate for assumed {eks_support} support.")
         plan["notes"].append(f"Assumed {eks_support} support; version lifecycle is not verified. Control plane runs 24 h/day; Auto Mode and other EKS add-ons are excluded.")
+        if (details(row).get('compute_config') or {}).get('enabled') is True:
+            # Auto Mode has additional EKS charges beyond the control plane and
+            # EC2 workers. A known excluded component makes the subtotal partial.
+            plan['complete'] = False
     elif service == "ecs" and kind == "task" and details(row).get("launch_type") == "FARGATE":
         def fargate_rates(marker):
             matches = []
@@ -204,6 +212,10 @@ def resource_plan(row, quotes, regional_quotes, *, hours_per_day, eks_support):
             raw_hourly = sum(c["rate"] * (number(row["vcpu"]) if c["label"] == "Fargate vCPU" else number(row["memory_mib"])/1024) for c in plan["components"])
             plan["rate_label"] = f"{plan['currency']} {raw_hourly}/h"
     elif service in {"elb", "vpc"}:
+        if kind == 'nat_gateway' and row.get('state') == 'deleted' and not resource_lifetime(row).get('end'):
+            plan['complete'] = False
+            plan['notes'].append('Deleted NAT gateway without a usable deletion date; runtime estimate unavailable.')
+            return plan
         eligible = [q for q in quotes if str(q.get("price_unit", "")).lower() in HOURS]
         if kind == "elastic_ip":
             state_marker = "inuse" if details(row).get("AssociationId") or details(row).get("NetworkInterfaceId") else "idle"
@@ -222,18 +234,27 @@ def resource_plan(row, quotes, regional_quotes, *, hours_per_day, eks_support):
         plan["notes"].append("Base provisioned hours only, 24 h/day. Traffic, capacity units, data processing and other network charges excluded; endpoint quantity uses one subnet per AZ.")
     else:
         rate = full_rate([q for q in quotes if str(q.get("price_unit", "")).lower() in HOURS])
-        if rate is None and row.get("list_price_per_hour") is not None and row.get("price_status") == "matched":
+        if not quotes and rate is None and row.get("list_price_per_hour") is not None and row.get("price_status") == "matched":
             rate = {**row, "price_per_unit": row["list_price_per_hour"], "price_unit": "Hrs"}
         if rate is not None:
-            factor = hours_per_day / 24
-            if row.get("state") in {"stopped", "stopping", "terminated", "shutting-down", "deleted"}:
-                factor = ZERO
+            continuous = service in {'elasticache', 'opensearch'}
+            runtime = Decimal(24) if continuous else hours_per_day
+            if current_scenario and not continuous and row.get("state") in {"stopped", "terminated", "deleted", "paused"}:
+                runtime = ZERO
                 plan["notes"].append("Current stopped/deleted state assumed throughout the scenario; compute usage is zero.")
+            factor = runtime / 24
             count = 1
             if service == "elasticache":
                 count = details(row).get("node_count")
             elif service == "redshift":
                 count = details(row).get("number_of_nodes")
+                deployment = str(details(row).get('multi_az', '')).lower()
+                if count is not None and deployment == 'enabled':
+                    count = number(count) * 2
+                    plan['notes'].append('Redshift Multi-AZ: node count per AZ multiplied by two Availability Zones.')
+                elif deployment != 'disabled':
+                    count = None
+                    plan['notes'].append('Redshift deployment is unknown or transitioning; total node quantity cannot be established.')
             elif service == "opensearch":
                 count = details(row).get("cluster_config", {}).get("InstanceCount")
             if count is None:
@@ -245,20 +266,56 @@ def resource_plan(row, quotes, regional_quotes, *, hours_per_day, eks_support):
             if service in {"elasticache", "redshift", "opensearch"}:
                 plan["complete"] = False
                 plan["notes"].append("Current data-node compute only; dedicated masters, warm nodes, storage, backups and usage charges excluded.")
-            plan["notes"].append(f"Current On-Demand rate, with {hours_per_day} runtime hours/day; no discounts or historical runtime inferred.")
-            if details(row).get("instance_lifecycle") == "spot":
-                plan["notes"].append("Spot resource: estimate uses On-Demand comparison, not the Spot rate.")
+            plan["notes"].append(f"Current On-Demand rate, with {runtime} runtime hours/day; no discounts or historical runtime inferred.")
+            plan['runtime_hours_per_day'] = runtime
+            plan['current_state_applied'] = current_scenario
             if service == "rds":
                 plan["complete"] = False
                 plan["notes"].append("RDS compute only; DB storage, backups and I/O are not priced by this collector.")
         else:
             plan["complete"] = False
             plan["notes"].append("No unambiguous supported unit price and usage quantity. " + str(row.get("price_status", "")))
+    if details(row).get('instance_lifecycle') == 'spot' or details(row).get('capacity_provider') == 'FARGATE_SPOT':
+        plan['notes'].append('Spot resource: estimate uses On-Demand comparison, not the Spot rate.')
     return plan
 
 
-def monthly_cost(plan, window, actual):
+def resource_lifetime(row):
+    """Keep creation evidence separate from a last launch or missing metadata."""
+    created = row.get('created_at')
+    fallback = row.get('last_launched_at') if row.get('service') == 'ec2' else None
+    lifetime = {'start': None, 'creation_known': False}
+    for value, reliable in ((created, True), (fallback, False)):
+        if value:
+            try:
+                lifetime = {'start': instant(value).isoformat(), 'creation_known': reliable}
+                break
+            except (TypeError, ValueError, OverflowError):
+                continue
+    # DescribeNatGateways can briefly return a deleted gateway. This is a leaf
+    # cost component; use its own end date without inferring other resources' ends.
+    if row.get('service') == 'vpc' and row.get('resource_type') == 'nat_gateway' and row.get('state') == 'deleted':
+        try:
+            ended = instant(details(row).get('DeleteTime'))
+            if not lifetime['start'] or ended >= instant(lifetime['start']):
+                lifetime['end'] = ended.isoformat()
+        except (TypeError, ValueError, OverflowError):
+            pass
+    return lifetime
+
+
+def monthly_cost(plan, window, actual, lifetime=None):
     left, right = instant(window["start"]), instant(window["end"])
+    lifetime = lifetime or {'start': None, 'creation_known': False}
+    created = instant(lifetime['start']) if lifetime['start'] else None
+    ended = instant(lifetime['end']) if lifetime.get('end') else None
+    estimate_end = max(left, min(right, ended)) if ended else right
+    estimate_start = min(estimate_end, max(left, created)) if created else left
+    eligible_hours = (_period_hours(estimate_start.isoformat(), estimate_end.isoformat())
+                      if estimate_start < estimate_end else ZERO)
+    before_creation = bool(created and created >= right and lifetime['creation_known'])
+    after_deletion = bool(ended and ended <= left)
+    inactive = before_creation or after_deletion
     relevant = []
     for row in actual:
         begin, end = instant(row["period_start"]), instant(row["period_end"])
@@ -272,25 +329,40 @@ def monthly_cost(plan, window, actual):
         return {"amount": None, "currency": "", "basis": "unavailable", "complete": False,
                 "billed": None, "estimated": None, "note": "Resource billing contains multiple currencies; no conversion inferred."}
     currency = next(iter(currencies), plan["currency"])
-    billed, covered, previous = ZERO, ZERO, None
+    billed, covered, covered_eligible, previous = ZERO, ZERO, ZERO, None
     provisional = False
     for begin, end, row in sorted(relevant, key=lambda item: (item[0], item[1])):
         if previous is not None and begin < previous:
             raise ValueError("Overlapping resource billing intervals would double-count costs.")
         billed += number(row["amount"])
         covered += _period_hours(begin.isoformat(), end.isoformat())
+        overlap_start = max(begin, estimate_start)
+        overlap_end = min(end, estimate_end)
+        if overlap_start < overlap_end:
+            covered_eligible += _period_hours(overlap_start.isoformat(), overlap_end.isoformat())
         previous = end
         provisional = provisional or bool(row.get("estimated"))
-    missing = window["hours"] - covered
-    can_estimate = plan["known"] and plan["currency"] == currency
+    missing = eligible_hours - covered_eligible
+    can_estimate = plan["known"] and plan["currency"] == currency and eligible_hours > 0
     estimate = ((plan["hourly"] * missing + plan["monthly"] * missing / window["month_hours"])
                 if can_estimate else ZERO)
-    known = bool(relevant) or can_estimate
-    complete = (missing == 0 or (can_estimate and plan["complete"]))
-    basis = "mixed" if relevant and missing > 0 and can_estimate else "billed" if relevant else "estimated" if can_estimate else "unavailable"
+    known = bool(relevant) or can_estimate or inactive
+    if inactive and not relevant:
+        currency = plan['currency'] or 'USD'
+    complete = (inactive or covered == window['hours']
+                or (lifetime['creation_known'] and missing == 0)
+                or (can_estimate and plan['complete']))
+    if created and not lifetime['creation_known'] and created > left and covered < window['hours']:
+        complete = False
+    basis = "mixed" if relevant and missing > 0 and can_estimate else "billed" if relevant else "estimated" if can_estimate or inactive else "unavailable"
     return {"amount": billed + estimate if known else None, "currency": currency, "basis": basis,
-            "billed": billed if relevant else None, "estimated": estimate if can_estimate and missing > 0 else None,
+            "billed": billed if relevant else None,
+            "estimated": estimate if (can_estimate and missing > 0) or (inactive and not relevant) else None,
             "complete": complete, "covered_hours": covered, "modeled_hours": missing,
+            "not_created": before_creation and not relevant,
+            "after_deletion": after_deletion and not relevant,
+            "allow_attachments": eligible_hours > 0 or bool(relevant),
+            "excluded_hours": window['hours'] - eligible_hours,
             "aws_provisional": provisional,
             "note": ("AWS amounts for returned intervals; list price fills uncovered intervals." if basis == "mixed" else
                      "Returned resource billing." if basis == "billed" else
@@ -336,7 +408,9 @@ def _build_model(rows, *, generated_at, context, partial):
                                "configuration": configuration(row)})
             continue
         plan = resource_plan(row, quotes[ident], regional[row.get("region")],
-                             hours_per_day=hours_per_day, eks_support=eks_support)
+                             hours_per_day=hours_per_day, eks_support=eks_support,
+                             current_scenario=context.get('mode') == 'inventory')
+        lifetime = resource_lifetime(row)
         resource = {"key": key_for(ident), "service": ident[0], "region": ident[1], "id": ident[2],
                     "name": str(row.get("resource_name") or ident[2]), "type": row.get("resource_type", ""),
                     "state": row.get("state", ""), "instance_type": row.get("instance_type", ""),
@@ -345,14 +419,26 @@ def _build_model(rows, *, generated_at, context, partial):
                     "cluster": values(row.get("cluster_name")), "plan": plan, "children": [],
                     "arn": row.get("resource_arn", ""), "relations": [],
                     "configuration": configuration(row),
-                    "months": {w["month"]: monthly_cost(plan, w, actual[ident]) for w in windows},
+                    "lifetime": lifetime,
+                    "months": {w["month"]: monthly_cost(plan, w, actual[ident], lifetime) for w in windows},
                     "notes": []}
         resources.append(resource)
         by_identity[ident] = resource
 
-    def link(parent, child):
+    attachment_starts = {}
+
+    def link(parent, child, attached_at=None):
         if child is not None and child["key"] != parent["key"] and child["key"] not in parent["children"]:
             parent["children"].append(child["key"])
+        if child is not None and attached_at:
+            try:
+                started = instant(attached_at)
+            except (TypeError, ValueError, OverflowError):
+                return
+            edge = parent['key'], child['key']
+            # Both APIs can describe the same attachment. Use the latest evidence
+            # if their snapshots differ rather than inventing earlier membership.
+            attachment_starts[edge] = max(started, attachment_starts.get(edge, started))
 
     lookup = defaultdict(list)
     for ident, row in inventory.items():
@@ -408,6 +494,10 @@ def _build_model(rows, *, generated_at, context, partial):
                 parent = by_identity.get(("ec2", ident[1], instance_id))
                 if parent:
                     link(parent, resource)
+            for attachment in details(row).get('attachments', []):
+                parent = by_identity.get(('ec2', ident[1], attachment.get('InstanceId')))
+                if parent:
+                    link(parent, resource, attachment.get('AttachTime'))
         if ident[0] == "ec2" and row.get("resource_type") == "instance":
             volume_ids = set(values(row.get("related_resource_ids")))
             volume_ids.update(block.get("volume_id") for block in details(row).get("block_devices", []))
@@ -419,10 +509,20 @@ def _build_model(rows, *, generated_at, context, partial):
                     link(resource, child)
                 else:
                     resource["notes"].append(f"Linked volume {volume_id} was not collected; its cost is excluded.")
+            for block in details(row).get('block_devices', []):
+                child = by_identity.get(('ebs', ident[1], block.get('volume_id')))
+                link(resource, child, block.get('attached_at'))
         if ident[0] in {"eks", "ecs"} and row.get("resource_type") in {"cluster", "eks_cluster"}:
             for other_ident, other in by_identity.items():
                 if other_ident[1] == ident[1] and other_ident[0] in {"ec2", "ebs"}:
                     if resource["name"] in other["cluster"] or ident[2] in other["cluster"]:
+                        if other_ident[0] == 'ebs' and any(
+                            ('ec2', ident[1], instance_id) in by_identity
+                            for instance_id in values(inventory[other_ident].get('attached_to'))
+                        ):
+                            # Walk through the worker so its creation and disk
+                            # attachment dates cannot be bypassed by a shortcut.
+                            continue
                         link(resource, other)
     # Target groups are structural inventory; connect their ALBs to resolved targets.
     for ident, row in inventory.items():
@@ -435,6 +535,33 @@ def _build_model(rows, *, generated_at, context, partial):
                         if target:
                             link(parent, target)
     index = {r["key"]: r for r in resources}
+    billing_by_key = {key_for(ident): entries for ident, entries in actual.items()}
+    scoped_cache = {}
+
+    def scoped_cost(resource, window, lower):
+        """Only attribute costs within the parent's possible lifetime.
+
+        A billed interval crossing a boundary cannot be split by assuming uniform
+        consumption. Keep that component unavailable in the parent view; its own
+        AWS cost remains intact in the resource and overall service views.
+        """
+        if lower <= instant(window['start']):
+            return resource['months'][window['month']]
+        cache_key = resource['key'], window['month'], lower
+        if cache_key not in scoped_cache:
+            right = instant(window['end'])
+            entries = [entry for entry in billing_by_key.get(resource['key'], [])
+                       if instant(entry['period_end']) > lower and instant(entry['period_start']) < right]
+            if any(instant(entry['period_start']) < lower for entry in entries):
+                cost = {'amount': None, 'currency': resource['months'][window['month']]['currency'],
+                        'basis': 'unavailable', 'complete': False}
+            else:
+                scoped_window = {**window, 'start': lower.isoformat(),
+                                 'hours': _period_hours(lower.isoformat(), right.isoformat())}
+                cost = monthly_cost(resource['plan'], scoped_window, entries, resource['lifetime'])
+            scoped_cache[cache_key] = cost
+        return scoped_cache[cache_key]
+
     for resource in resources:
         seen, pending = set(), [resource["key"]]
         while pending:
@@ -448,13 +575,34 @@ def _build_model(rows, *, generated_at, context, partial):
         for window in windows:
             month, totals, bases = window["month"], {}, set()
             complete = not resource["notes"]
-            for key in seen:
-                entry = index[key]["months"][month]
+            # Earliest reachable date wins when a component is shared along several
+            # paths. Dates only move forward, so cycles cannot expand the interval.
+            left, right = instant(window['start']), instant(window['end'])
+            scopes, pending = {}, [(left, resource['key'])]
+            while pending:
+                lower, key = heapq.heappop(pending)
+                if key in scopes:
+                    continue
+                scopes[key] = lower
+                life_start = index[key]['lifetime']['start']
+                next_start = max(lower, instant(life_start)) if life_start else lower
+                if index[key]['months'][month].get('allow_attachments', True):
+                    if next_start < right:
+                        for child in index[key]['children']:
+                            child_start = max(next_start, attachment_starts.get((key, child), next_start))
+                            if child_start < right:
+                                heapq.heappush(pending, (child_start, child))
+            components = {}
+            for key, lower in scopes.items():
+                entry = scoped_cost(index[key], window, lower)
+                components[key] = {**{field: entry[field] for field in ('amount', 'currency', 'basis', 'complete')},
+                                   'start': lower.isoformat()}
                 complete = complete and entry["complete"] and not index[key]["notes"]
                 if entry["amount"] is not None:
                     totals[entry["currency"]] = totals.get(entry["currency"], ZERO) + entry["amount"]
                     bases.add(entry["basis"])
             resource["totals"][month] = {"amounts": totals, "complete": complete,
+                                         "included_keys": sorted(scopes), "components": components,
                                          "basis": next(iter(bases)) if len(bases) == 1 else "mixed" if bases else "unavailable"}
     for wrapper in structural:
         wrapper["relations"] = [reference(wrapper["region"], "related_resource_ids", identifier)
@@ -490,7 +638,7 @@ def _build_model(rows, *, generated_at, context, partial):
             "windows": windows, "resources": resources, "structural": structural, "summary": summary, "billing": billing,
             "billing_services": billing_services,
             "assumptions": {"hours_per_day": hours_per_day, "eks_support": eks_support,
-                            "inventory_basis": "Current snapshot applied to all selected dates as a cost scenario, not historical usage.",
+                            "inventory_basis": "Current capacity scenario bounded by available creation dates; unknown lifetimes and historical relationships are not reconstructed.",
                             "excluded": "Unpriced components, data transfer, taxes, discounts and request/usage charges without measured usage. Shared components are included in each parent view but counted once in the overall model."},
             "issues": [row for row in rows if row.get("row_type") == "error"], "context": context}
 

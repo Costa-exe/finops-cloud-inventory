@@ -52,7 +52,9 @@ class CostEstimationTests(unittest.TestCase):
         self.assertEqual(months["2026-08"]["amount"], Decimal("15.36"))
         self.assertEqual(months["2026-09"]["amount"], Decimal("28.80"))
         stopped = build([resource(state="stopped")])["resources"][0]
-        self.assertEqual(stopped["months"]["2026-09"]["amount"], 0)
+        self.assertEqual(stopped["months"]["2026-09"]["amount"], Decimal('86.40'))
+        current = build([resource(state="stopped")], mode='inventory')["resources"][0]
+        self.assertEqual(current["months"]["2026-09"]["amount"], 0)
         self.assertEqual(stopped["plan"]["rate_label"], "USD 0.12/h")
 
     def test_ebs_excess_iops_and_throughput_with_partial_month(self):
@@ -154,7 +156,9 @@ class HTMLReportTests(unittest.TestCase):
         self.assertEqual(Decimal(entries[CLUSTER]["totals"]["2026-09"]["amounts"]["USD"]), Decimal("257.92"))
         self.assertEqual(len(entries[CLUSTER]["included_keys"]), 6)
         self.assertEqual(Decimal(self.model["summary"]["2026-09"]["USD"]["total"]), Decimal("297.92"))
-        self.assertEqual(Decimal(self.model["summary"]["2026-07"]["USD"]["total"]), Decimal("306.68"))
+        self.assertEqual(Decimal(self.model["summary"]["2026-07"]["USD"]["total"]), Decimal("0"))
+        self.assertIsNone(entries[NODE_A]['months']['2026-07']['amount'])
+        self.assertTrue(entries[CLUSTER]['months']['2026-07']['not_created'])
         self.assertTrue(self.model["simulation_only"])
 
     def test_html_escapes_script_terminators_and_redacts_secrets(self):

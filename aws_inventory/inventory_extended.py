@@ -86,8 +86,12 @@ def collect_emr(ctx, region):
     for summary in ctx.safe_pages("emr", "list_clusters", region, "Clusters", ClusterStates=["STARTING", "BOOTSTRAPPING", "RUNNING", "WAITING"]):
         cluster = (ctx.safe_call("emr", "describe_cluster", region, ClusterId=summary["Id"]) or {}).get("Cluster", summary)
         instances = ctx.safe_pages("emr", "list_instances", region, "Instances", ClusterId=summary["Id"])
+        created = cluster.get('Status', {}).get('Timeline', {}).get('CreationDateTime')
+        if created is None:
+            created = summary.get('Status', {}).get('Timeline', {}).get('CreationDateTime')
         emit(ctx, "emr", "cluster", summary["Id"], region, cluster, name=cluster.get("Name"),
              arn=cluster.get("ClusterArn"), links=[i.get("Ec2InstanceId") for i in instances],
+             created_at=created,
              state=cluster.get("Status", {}).get("State"), fields=("ReleaseLabel", "InstanceCollectionType"))
 
 

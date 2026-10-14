@@ -53,7 +53,7 @@ class ServiceExportTests(unittest.TestCase):
         self.assertEqual(len([row for row in workbook['_unique'] if row[0].value]), 3)
         self.assertIn('_unique', attached['E7'].value)
         self.assertIn('SUBTOTAL(103', workbook['_members']['B1'].value)
-        self.assertIn('SUMIF', workbook['_unique']['B1'].value)
+        self.assertIn('INDEX', workbook['_unique']['B1'].value)
 
     def test_both_download_styles_preserve_all_cell_values_types_and_formulas(self):
         model = self.model()

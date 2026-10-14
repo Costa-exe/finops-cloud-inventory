@@ -76,4 +76,6 @@ class OutputLanguageTests(unittest.TestCase):
                 self.assertTrue(all(len(sheet.title) <= 31 for sheet in workbook))
                 worker = next(row for row in workbook[own_sheet].iter_rows(min_row=4)
                               if row[0].value == 'worker-a')
-                self.assertEqual(worker[5].value, 89.28)
+                # July predates the only known EC2 launch; September remains fully estimated.
+                self.assertIsNone(worker[5].value)
+                self.assertEqual(worker[7].value, 86.4)

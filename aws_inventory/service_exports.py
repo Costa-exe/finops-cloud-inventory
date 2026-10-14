@@ -15,7 +15,7 @@ from openpyxl.workbook.properties import CalcProperties
 from openpyxl.worksheet.views import Selection
 
 from .workbooks import _text
-from .localization import translate_message
+from .localization import labels, translate_message
 
 MONEY = '"USD "#,##0.00;[Red]("USD "#,##0.00);"USD "0.00'
 HEADER = 3
@@ -50,6 +50,7 @@ def _service_book(model, service):
     the footer from the union of components of the currently visible parents.
     """
     language = model['context'].get('language', 'en')
+    words = labels(language)
     tr = lambda en, italian: translate_message(en, italian, language)
     months = [w['month'] for w in model['windows']]
     resources = [r for r in model['resources'] if r['service'] == service]
@@ -159,8 +160,20 @@ def _service_book(model, service):
           [([region, kind, tr('Known own costs only', 'Solo costi propri noti')], [known_sum(own(r, m) for r in rs) for m in months]) for (region, kind), rs in sorted(grouped.items())])
     def cost_note(r):
         entries = list(r['months'].values())
+        if all(v.get('not_created') for v in entries):
+            return words['before_creation']
+        if all(v.get('after_deletion') for v in entries):
+            return words['after_deletion']
         estimated = any(v['basis'] in {'estimated', 'mixed'} for v in entries)
-        return tr('Includes estimates', 'Include stime') if estimated else tr('Billed / unavailable', 'Fatturato / non disponibile')
+        note = tr('Includes estimates', 'Include stime') if estimated else tr('Billed / unavailable', 'Fatturato / non disponibile')
+        life = r.get('lifetime', {})
+        if life.get('start'):
+            note += ' · ' + words['creation_date' if life['creation_known'] else 'last_launch'] + ': ' + life['start']
+        elif estimated:
+            note += ' · ' + words['lifetime_unknown']
+        if life.get('end'):
+            note += ' · ' + words['deletion_date'] + ': ' + life['end']
+        return note
     sheet(tr('By resource', 'Per risorsa'), [tr('Name', 'Nome'), tr('Region', 'Regione'), tr('Type', 'Tipo'), tr('Catalog rate', 'Tariffa catalogo'), tr('Basis', 'Fonte')],
           [([r['name'] or r['id'], r['region'], r['instance_type'] or r['storage_type'] or r['type'], r['plan']['rate_label'] if r['plan']['currency'] == 'USD' else '', cost_note(r)], [own(r, m) for m in months]) for r in resources])
     attached_rows = []
@@ -168,31 +181,46 @@ def _service_book(model, service):
         children = [index[k] for k in r['included_keys'] if k != r['key']]
         included = ', '.join(sorted({c['service'].upper() + ' / ' + c['type'] for c in children}))
         included = tr('Includes: ', 'Include: ') + included if included else tr('Own resource only', 'Solo risorsa propria')
+        if all(value.get('not_created') for value in r['months'].values()):
+            included = words['before_creation']
+        elif all(value.get('after_deletion') for value in r['months'].values()):
+            included = words['after_deletion']
         if any(not v['complete'] for v in r['totals'].values()):
             included += tr(' · incomplete known subtotal', ' · subtotale noto incompleto')
         attached_rows.append(([r['name'] or r['id'], r['region'], r['instance_type'] or r['type'], included],
                               [r['totals'][m]['amounts'].get('USD') for m in months]))
     attached, start, footer = sheet(tr('Attached costs', 'Costi associati'), [tr('Name', 'Nome'), tr('Region', 'Regione'), tr('Type', 'Tipo'), tr('Included services', 'Servizi inclusi')], attached_rows)
     text_cell(attached.cell(footer, 1), tr('Unique total', 'Totale univoco'))
-    # Membership rows refer to visible parent cells; unique component rows only
-    # contribute if at least one visible parent includes that component.
+    # Group each component/month by earliest attributed start. The first visible
+    # parent covers the union of these nested intervals, including negative costs.
     membership = book.create_sheet('_members')
     unique = book.create_sheet('_unique')
     membership.sheet_state = unique.sheet_state = 'hidden'
-    included_keys = set()
     quoted_title = "'" + attached.title.replace("'", "''") + "'"
-    for rownum, r in enumerate(resources, HEADER + 1):
-        for key in r['included_keys']:
-            included_keys.add(key)
-            membership.append([key, f'=SUBTOTAL(103,{quoted_title}!A{rownum})'])
-    last_member = max(1, membership.max_row)
-    for key in sorted(included_keys):
-        rownum = unique.max_row + 1 if unique.cell(1, 1).value is not None else 1
-        text_cell(unique.cell(rownum, 1), key)
-        for col, m in enumerate(months, 2):
-            amount = own(index[key], m)
-            if amount is not None:
-                unique.cell(rownum, col, f'=IF(SUMIF(_members!$A$1:$A${last_member},A{rownum},_members!$B$1:$B${last_member})>0,{Decimal(str(amount)):f},"")')
+    included_keys = sorted({key for r in resources for key in r['included_keys']})
+    groups = defaultdict(list)
+    for parent_row, r in enumerate(resources, HEADER + 1):
+        for month in months:
+            components = r['totals'][month]['components']
+            for key in r['included_keys']:
+                entry = components.get(key)
+                groups[key, month].append((entry['start'] if entry else '9999', parent_row, entry))
+    next_member_row = 1
+    for unique_row, key in enumerate(included_keys, 1):
+        text_cell(unique.cell(unique_row, 1), key)
+        for col, month in enumerate(months, 2):
+            first = next_member_row
+            for _, parent_row, entry in sorted(groups[key, month], key=lambda item: item[:2]):
+                amount = entry['amount'] if entry and entry['currency'] == 'USD' else None
+                visible = f'=SUBTOTAL(103,{quoted_title}!A{parent_row})' if entry else '=0'
+                membership.append([key, visible, amount, month])
+                next_member_row += 1
+            last = next_member_row - 1
+            flags = f'_members!$B${first}:$B${last}'
+            amounts = f'_members!$C${first}:$C${last}'
+            value = f'INDEX({amounts},MATCH(1,{flags},0))'
+            unique.cell(unique_row, col,
+                        f'=IF(COUNTIF({flags},1)=0,"",IF(COUNT({value})=0,"",{value}))')
     for offset in range(len(months)):
         col = letter(offset + 2)
         rng = f'_unique!{col}1:{col}{max(1, unique.max_row)}'

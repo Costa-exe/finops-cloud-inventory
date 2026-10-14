@@ -152,6 +152,7 @@ def collect_ec2(ctx, region):
                                  "volume_id": block.get("VolumeId"),
                                  "delete_on_termination": block.get("DeleteOnTermination"),
                                  "attachment_status": block.get("Status"),
+                                 "attached_at": block.get("AttachTime"),
                                  "size_gib": volume.get("Size"), "type": volume.get("VolumeType"),
                                  "iops": volume.get("Iops"),
                                  "throughput_mib_s": volume.get("Throughput"),
@@ -184,7 +185,13 @@ def collect_ec2(ctx, region):
               storage_gib=sum(volumes[item].get("Size", 0) for item in volume_ids)
               if size_complete else None,
               vcpu=configured_vcpu, memory_mib=specifications.get("MemoryInfo", {}).get("SizeInMiB"),
-              created_at=instance.get("LaunchTime"),
+              # LaunchTime changes after stop/start; device 0 attachment records initial launch.
+              created_at=next((interface.get("Attachment", {}).get("AttachTime")
+                               for interface in interfaces
+                               if interface.get("Attachment", {}).get("DeviceIndex") == 0
+                               and interface.get("NetworkCardIndex", 0) == 0), None),
+              created_at_source="primary_network_interface_attachment",
+              last_launched_at=instance.get("LaunchTime"),
               details={"image_id": instance.get("ImageId"),
                        "outpost_arn": instance.get("OutpostArn"),
                        "architecture": instance.get("Architecture"),
@@ -559,7 +566,7 @@ def collect_vpc(ctx, region):
         ("describe_subnets", "Subnets", "subnet", "SubnetId", ("CidrBlock", "AvailableIpAddressCount", "MapPublicIpOnLaunch", "DefaultForAz", "Ipv6CidrBlockAssociationSet")),
         ("describe_security_groups", "SecurityGroups", "security_group", "GroupId", ("GroupName", "Description", "IpPermissions", "IpPermissionsEgress", "OwnerId")),
         ("describe_network_interfaces", "NetworkInterfaces", "network_interface", "NetworkInterfaceId", ("Description", "InterfaceType", "RequesterManaged", "RequesterId", "Attachment", "Association", "PrivateIpAddresses", "Ipv6Addresses")),
-        ("describe_nat_gateways", "NatGateways", "nat_gateway", "NatGatewayId", ("ConnectivityType", "AvailabilityMode", "AutoProvisionZones", "NatGatewayAddresses", "FailureCode", "FailureMessage")),
+        ("describe_nat_gateways", "NatGateways", "nat_gateway", "NatGatewayId", ("ConnectivityType", "AvailabilityMode", "AutoProvisionZones", "NatGatewayAddresses", "DeleteTime", "FailureCode", "FailureMessage")),
         ("describe_route_tables", "RouteTables", "route_table", "RouteTableId", ("Routes", "Associations", "PropagatingVgws")),
         ("describe_internet_gateways", "InternetGateways", "internet_gateway", "InternetGatewayId", ("Attachments",)),
         ("describe_vpc_endpoints", "VpcEndpoints", "vpc_endpoint", "VpcEndpointId", ("VpcEndpointType", "ServiceName", "NetworkInterfaceIds", "RouteTableIds", "PrivateDnsEnabled", "DnsEntries", "IpAddressType")),

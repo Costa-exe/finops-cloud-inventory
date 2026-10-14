@@ -74,12 +74,18 @@ function renderCard(r,month,currency){
  const gross=append(el('div',undefined,'resource-total'),el('small',t('attached')),el('strong',money(total.amounts[currency],currency)),el('small',`${monthLabel(month)}${total.complete?'':' · '+t('partial')}`));
  append(card,append(el('div',undefined,'resource-head'),identity,gross));
  const body=el('div',undefined,'resource-body');body.append(el('p',`${t('own')}: ${own(value,currency)}`));
- const connected=r.included_keys.filter(k=>k!==r.key).map(k=>byKey.get(k));
- if(connected.length){const related=el('details');related.open=true;related.append(el('summary',t('attachments')));related.append(table([t('resource'),t('type'),t('source'),t('own')],connected.map(c=>[resourceLink(c),typeLabel(c.type),el('span',`${basis(c.months[month].basis)} · ${t('included')}`,'included-cost'),own(c.months[month],currency)])));body.append(related);}
+ if(value.not_created)body.append(el('p',t('before_creation'),'metric-note'));
+ else if(value.after_deletion)body.append(el('p',t('after_deletion'),'metric-note'));
+ else if(!r.lifetime?.start)body.append(el('p',t('lifetime_unknown'),'metric-note'));
+ else if(!r.lifetime.creation_known&&Number(value.excluded_hours)>0)body.append(el('p',t('lifetime_launch'),'metric-note'));
+ const monthKeys=total.included_keys??r.included_keys;
+ const connected=monthKeys.filter(k=>k!==r.key).map(k=>byKey.get(k));
+ if(connected.length){const related=el('details');related.open=true;related.append(el('summary',t('attachments')));related.append(table([t('resource'),t('type'),t('source'),t('own')],connected.map(c=>{const contribution=total.components?.[c.key]??c.months[month];return [resourceLink(c),typeLabel(c.type),el('span',`${basis(contribution.basis)} · ${t('included')}`,'included-cost'),own(contribution,currency)];})));body.append(related);}
  if(r.relations?.length){const rel=el('details');rel.open=true;rel.append(el('summary',t('relations')),el('p',t('relations_note')));rel.append(table([t('resource'),t('type'),t('source'),t('own')],r.relations.map(ref=>{
-  const target=byKey.get(ref.key),included=target&&r.included_keys.includes(target.key),parent=target&&target.included_keys.includes(r.key);
+  const target=byKey.get(ref.key),included=target&&monthKeys.includes(target.key),parent=target&&(target.totals[month].included_keys??target.included_keys).includes(r.key);
   const status=included?t('included'):parent?t('included_in_parent'):t('reference');
-  return [target?resourceLink(target):ref.name||ref.id,typeLabel(ref.type||'resource'),el('span',status,included||parent?'included-cost':''),target&&(included||parent)?`${own(target.months[month],currency)} · ${basis(target.months[month].basis)}`:'—'];
+  const contribution=included?(total.components?.[target.key]??target.months[month]):target?.months[month];
+  return [target?resourceLink(target):ref.name||ref.id,typeLabel(ref.type||'resource'),el('span',status,included||parent?'included-cost':''),target&&(included||parent)?`${own(contribution,currency)} · ${basis(contribution.basis)}`:'—'];
  })));body.append(rel);}
  body.append(renderCalculation(r,month,currency));card.append(body);return card;
 }
@@ -88,7 +94,7 @@ function translateNote(note){
  if(language==='en')return note;
  const exact=data.note_translations?.[note]??data.messages?.[note];if(exact)return exact;
  if(note.startsWith('No unambiguous supported unit price'))return tf('missing_price_note',{status:note.split('. ').slice(1).join('. ')});
- if(note.startsWith('Current On-Demand rate, with'))return tf('current_rate_note',{hours:data.assumptions.hours_per_day});
+ if(note.startsWith('Current On-Demand rate, with'))return tf('current_rate_note',{hours:note.split('with ')[1].split(' runtime')[0]});
  if(note.startsWith('Assumed ')&&note.includes('support;'))return tf('eks_support_note',{support:data.assumptions.eks_support});
  if(note.startsWith('EKS ')&&note.endsWith('(assumed)'))return tf('eks_component',{support:data.assumptions.eks_support});
  if(note.startsWith('No unique catalog rate'))return t('eks_missing_rate');
